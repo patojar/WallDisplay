@@ -2,9 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"musicDisplay/sonos"
@@ -14,10 +22,23 @@ const (
 	discoveryTimeout       = 8 * time.Second
 	enrichmentPerDevice    = 10 * time.Second
 	enrichmentMinimumTotal = 30 * time.Second
+	defaultConfigPath      = "config.json"
 )
 
 func main() {
-	discoveryCtx, discoveryCancel := context.WithTimeout(context.Background(), discoveryTimeout)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cfg, err := loadConfig(defaultConfigPath)
+	if err != nil {
+		log.Printf("warning: %v", err)
+	}
+	targetRoom := strings.TrimSpace(cfg.Room)
+	if targetRoom != "" {
+		log.Printf("info: filtering to room %q", targetRoom)
+	}
+
+	discoveryCtx, discoveryCancel := context.WithTimeout(ctx, discoveryTimeout)
 	devices, err := sonos.Discover(discoveryCtx, discoveryTimeout)
 	discoveryCancel()
 	if err != nil {
@@ -33,7 +54,7 @@ func main() {
 	if enrichmentWindow < enrichmentMinimumTotal {
 		enrichmentWindow = enrichmentMinimumTotal
 	}
-	enrichmentCtx, enrichmentCancel := context.WithTimeout(context.Background(), enrichmentWindow)
+	enrichmentCtx, enrichmentCancel := context.WithTimeout(ctx, enrichmentWindow)
 	defer enrichmentCancel()
 
 	enriched, err := sonos.EnrichDevices(enrichmentCtx, devices)
@@ -50,7 +71,10 @@ func main() {
 
 	var statuses []roomStatus
 
-	for _, device := range devices {
+	var targetDevice *sonos.Device
+
+	for i := range devices {
+		device := devices[i]
 		if !device.IsSonos {
 			log.Printf("ignoring non-Sonos responder at %s (%s)", device.IP, device.Server)
 			continue
@@ -62,8 +86,15 @@ func main() {
 		if room == "" {
 			room = deriveFallbackName(device)
 		}
+		if targetRoom != "" && !roomMatches(room, targetRoom) {
+			continue
+		}
 
-		playbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if targetRoom != "" && roomMatches(room, targetRoom) && targetDevice == nil {
+			targetDevice = &devices[i]
+		}
+
+		playbackCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		info, err := sonos.NowPlaying(playbackCtx, device)
 		cancel()
 		var track string
@@ -105,6 +136,25 @@ func main() {
 	fmt.Printf("%s  %s  %s\n", strings.Repeat("-", roomColumnWidth), strings.Repeat("-", stateColumnWidth), strings.Repeat("-", len("Now Playing")))
 	for _, status := range statuses {
 		fmt.Printf("%-*s  %-*s  %s\n", roomColumnWidth, status.roomName, stateColumnWidth, status.state, status.track)
+	}
+
+	if targetRoom == "" {
+		return
+	}
+
+	if cfg.CallbackURL == "" {
+		log.Printf("info: callback_url not configured; skipping event subscription")
+		return
+	}
+
+	if targetDevice == nil {
+		log.Printf("warning: no device matched room %q for subscription", targetRoom)
+		return
+	}
+
+	fmt.Println("Listening for updates. Press Ctrl+C to exit.")
+	if err := listenForEvents(ctx, *targetDevice, targetRoom, cfg); err != nil {
+		log.Printf("warning: %v", err)
 	}
 }
 
@@ -165,5 +215,132 @@ func formatStateDisplay(raw string) string {
 		return ""
 	default:
 		return raw
+	}
+}
+
+func roomMatches(roomName, target string) bool {
+	return strings.EqualFold(strings.TrimSpace(roomName), strings.TrimSpace(target))
+}
+
+func listenForEvents(ctx context.Context, device sonos.Device, room string, cfg Config) error {
+	callbackURL, err := url.Parse(strings.TrimSpace(cfg.CallbackURL))
+	if err != nil {
+		return fmt.Errorf("invalid callback_url: %w", err)
+	}
+	if !strings.EqualFold(callbackURL.Scheme, "http") {
+		return fmt.Errorf("callback_url must use http scheme")
+	}
+	if callbackURL.Host == "" {
+		return fmt.Errorf("callback_url missing host:port")
+	}
+	path := callbackURL.Path
+	if path == "" {
+		path = "/"
+	}
+
+	notifyCh := make(chan sonos.AVTransportEvent, 16)
+	serverErrors := make(chan error, 1)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "NOTIFY" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		r.Body.Close()
+		if err != nil {
+			log.Printf("warning: read event body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		event, err := sonos.ParseAVTransportEvent(body)
+		if err != nil {
+			log.Printf("warning: parse event: %v", err)
+		} else {
+			select {
+			case notifyCh <- event:
+			default:
+				log.Printf("warning: dropping event for %s (channel full)", room)
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	server := &http.Server{Handler: mux}
+	listener, err := net.Listen("tcp", callbackURL.Host)
+	if err != nil {
+		return fmt.Errorf("listen callback address: %w", err)
+	}
+
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErrors <- err
+		}
+	}()
+
+	subCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	subscription, err := sonos.SubscribeAVTransport(subCtx, device, callbackURL.String(), 30*time.Minute)
+	cancel()
+	if err != nil {
+		_ = server.Shutdown(context.Background())
+		return err
+	}
+	log.Printf("info: subscribed to AVTransport events with SID %s", subscription.ID)
+
+	var renewTicker *time.Ticker
+	var renew <-chan time.Time
+	if subscription.Timeout > 0 {
+		interval := subscription.Timeout / 2
+		if interval < time.Minute {
+			interval = time.Minute
+		}
+		renewTicker = time.NewTicker(interval)
+		renew = renewTicker.C
+		defer renewTicker.Stop()
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = server.Shutdown(shutdownCtx)
+			shutdownCancel()
+			unsubscribeCtx, unsubscribeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := sonos.UnsubscribeAVTransport(unsubscribeCtx, subscription)
+			unsubscribeCancel()
+			if err != nil {
+				log.Printf("warning: unsubscribe failed: %v", err)
+			}
+			return nil
+		case ev := <-notifyCh:
+			state := formatStateDisplay(ev.TransportState)
+			if state == "" {
+				state = "Unknown"
+			}
+			track := formatTrackDisplay(ev.Track)
+			if track == "" {
+				track = "(idle)"
+			}
+			fmt.Printf("[%s] %s – %s | %s\n", time.Now().Format("15:04:05"), room, state, track)
+		case <-renew:
+			renewCtx, renewCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			newTimeout, err := sonos.RenewAVTransport(renewCtx, subscription, subscription.Timeout)
+			renewCancel()
+			if err != nil {
+				log.Printf("warning: renew subscription failed: %v", err)
+				continue
+			}
+			if newTimeout > 0 {
+				subscription.Timeout = newTimeout
+				interval := newTimeout / 2
+				if interval < time.Minute {
+					interval = time.Minute
+				}
+				renewTicker.Reset(interval)
+			}
+		case err := <-serverErrors:
+			return fmt.Errorf("callback server error: %w", err)
+		}
 	}
 }

@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
@@ -80,24 +79,6 @@ func NowPlaying(ctx context.Context, device Device) (TrackInfo, error) {
 		info.State = state
 	}
 	return info, nil
-}
-
-func avTransportControlURL(device Device) (string, error) {
-	if strings.TrimSpace(device.Location) == "" {
-		return "", errors.New("sonos: device location is empty")
-	}
-
-	baseURL, err := url.Parse(device.Location)
-	if err != nil {
-		return "", fmt.Errorf("sonos: parse device location: %w", err)
-	}
-
-	baseURL.Path = ""
-	baseURL.RawPath = ""
-	baseURL.RawQuery = ""
-	baseURL.Fragment = ""
-
-	return strings.TrimRight(baseURL.String(), "/") + "/MediaRenderer/AVTransport/Control", nil
 }
 
 func buildGetPositionInfoPayload() []byte {
