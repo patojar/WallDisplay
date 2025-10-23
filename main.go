@@ -42,38 +42,69 @@ func main() {
 	}
 	devices = enriched
 
-	count := 0
+	type roomStatus struct {
+		roomName string
+		track    string
+		state    string
+	}
+
+	var statuses []roomStatus
+
 	for _, device := range devices {
 		if !device.IsSonos {
 			log.Printf("ignoring non-Sonos responder at %s (%s)", device.IP, device.Server)
 			continue
 		}
-		count++
-		meta := device.Metadata
-		friendly := meta.FriendlyName
-		if friendly == "" {
-			friendly = deriveFallbackName(device)
-		}
-		room := strings.TrimSpace(meta.RoomName)
+		room := strings.TrimSpace(device.Metadata.RoomName)
 		if room == "" {
-			room = deriveFallbackRoomName(device, meta)
+			room = deriveFallbackRoomName(device, device.Metadata)
 		}
-		model := strings.TrimSpace(fmt.Sprintf("%s %s", meta.Manufacturer, meta.ModelName))
-		if strings.TrimSpace(model) == "" {
-			model = device.Server
+		if room == "" {
+			room = deriveFallbackName(device)
 		}
-		fmt.Printf("- %s (%s)\n", friendly, device.IP)
-		fmt.Printf("  Model: %s | Serial: %s | SW: %s\n", model, meta.SerialNumber, meta.SoftwareVersion)
-		if room != "" {
-			fmt.Printf("  Room: %s\n", room)
+
+		playbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		info, err := sonos.NowPlaying(playbackCtx, device)
+		cancel()
+		var track string
+		state := "Unknown"
+		if err != nil {
+			log.Printf("warning: now playing for %s: %v", room, err)
+			track = "Unavailable"
+			state = "Unavailable"
+		} else {
+			track = formatTrackDisplay(info)
+			if track == "" {
+				track = "(idle)"
+			}
+			state = formatStateDisplay(info.State)
+			if state == "" {
+				state = "Unknown"
+			}
 		}
-		fmt.Printf("  Location: %s\n", device.Location)
+		statuses = append(statuses, roomStatus{roomName: room, track: track, state: state})
 	}
 
-	if count == 0 {
+	if len(statuses) == 0 {
 		fmt.Println("No Sonos devices found after filtering.")
-	} else {
-		fmt.Printf("Found %d Sonos device(s).\n", count)
+		return
+	}
+
+	roomColumnWidth := len("Room")
+	stateColumnWidth := len("State")
+	for _, status := range statuses {
+		if len(status.roomName) > roomColumnWidth {
+			roomColumnWidth = len(status.roomName)
+		}
+		if len(status.state) > stateColumnWidth {
+			stateColumnWidth = len(status.state)
+		}
+	}
+
+	fmt.Printf("%-*s  %-*s  %s\n", roomColumnWidth, "Room", stateColumnWidth, "State", "Now Playing")
+	fmt.Printf("%s  %s  %s\n", strings.Repeat("-", roomColumnWidth), strings.Repeat("-", stateColumnWidth), strings.Repeat("-", len("Now Playing")))
+	for _, status := range statuses {
+		fmt.Printf("%-*s  %-*s  %s\n", roomColumnWidth, status.roomName, stateColumnWidth, status.state, status.track)
 	}
 }
 
@@ -95,4 +126,44 @@ func deriveFallbackRoomName(device sonos.Device, meta sonos.DeviceMetadata) stri
 		}
 	}
 	return ""
+}
+
+func formatTrackDisplay(info sonos.TrackInfo) string {
+	title := strings.TrimSpace(info.Title)
+	artist := strings.TrimSpace(info.Artist)
+	switch {
+	case title != "" && artist != "":
+		return fmt.Sprintf("%s - %s", artist, title)
+	case title != "":
+		return title
+	case artist != "":
+		return artist
+	}
+	if strings.TrimSpace(info.StreamInfo) != "" {
+		return strings.TrimSpace(info.StreamInfo)
+	}
+	if strings.TrimSpace(info.URI) != "" {
+		return strings.TrimSpace(info.URI)
+	}
+	return ""
+}
+
+func formatStateDisplay(raw string) string {
+	state := strings.ToUpper(strings.TrimSpace(raw))
+	switch state {
+	case "PLAYING":
+		return "Playing"
+	case "PAUSED_PLAYBACK":
+		return "Paused"
+	case "STOPPED":
+		return "Stopped"
+	case "TRANSITIONING":
+		return "Transitioning"
+	case "NO_MEDIA_PRESENT":
+		return "No Media"
+	case "":
+		return ""
+	default:
+		return raw
+	}
 }
