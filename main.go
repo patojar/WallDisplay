@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	discoveryTimeout       = 30 * time.Second
+	discoveryTimeout       = 8 * time.Second
 	enrichmentPerDevice    = 10 * time.Second
 	enrichmentMinimumTotal = 30 * time.Second
 )

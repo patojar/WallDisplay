@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	ssdpAddress = "239.255.255.250:1900"
-	ssdpSearch  = "urn:schemas-upnp-org:device:ZonePlayer:1"
-	ssdpTimeout = 250 * time.Millisecond
+	ssdpAddress     = "239.255.255.250:1900"
+	ssdpSearch      = "urn:schemas-upnp-org:device:ZonePlayer:1"
+	ssdpTimeout     = 250 * time.Millisecond
+	ssdpQuietPeriod = 1 * time.Second
 )
 
 var ssdpUDPAddr = &net.UDPAddr{IP: net.IPv4(239, 255, 255, 250), Port: 1900}
@@ -60,6 +61,8 @@ func Discover(ctx context.Context, timeout time.Duration) ([]Device, error) {
 	deviceMap := make(map[string]Device)
 	buf := make([]byte, 2048)
 
+	lastResponse := time.Time{}
+
 	for {
 		if ctx.Err() != nil {
 			break
@@ -81,6 +84,9 @@ func Discover(ctx context.Context, timeout time.Duration) ([]Device, error) {
 		n, addr, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				if !lastResponse.IsZero() && time.Since(lastResponse) >= ssdpQuietPeriod {
+					break
+				}
 				continue
 			}
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
@@ -101,6 +107,7 @@ func Discover(ctx context.Context, timeout time.Duration) ([]Device, error) {
 			key = device.IP
 		}
 		deviceMap[key] = device
+		lastResponse = time.Now()
 	}
 
 	devices := make([]Device, 0, len(deviceMap))
