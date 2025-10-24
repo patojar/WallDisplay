@@ -2,8 +2,6 @@ package sonos
 
 import (
 	"context"
-	"crypto/sha1"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -11,8 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +27,7 @@ func ListenForEvents(ctx context.Context, device Device, room, callbackPath stri
 	serverErrors := make(chan error, 1)
 	lastState := ""
 	lastTrackSignature := ""
+	savedArtSignature := ""
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
@@ -131,14 +128,23 @@ func ListenForEvents(ctx context.Context, device Device, room, callbackPath stri
 				continue
 			}
 			signature := trackSignature(ev.Track, display)
-			if state == lastState && signature == lastTrackSignature {
+			needPrint := state != lastState || signature != lastTrackSignature
+			needArt := signature != "" && signature != savedArtSignature
+
+			if !needPrint && !needArt {
 				continue
 			}
-			lastState = state
-			lastTrackSignature = signature
-			fmt.Printf("[%s] %s – %s | %s\n", time.Now().Format("15:04:05"), room, state, display)
-			if err := saveAlbumArt(ctx, device, room, ev.Track, signature); err != nil {
-				log.Printf("warning: album art: %v", err)
+			if needPrint {
+				lastState = state
+				lastTrackSignature = signature
+				fmt.Printf("[%s] %s – %s | %s\n", time.Now().Format("15:04:05"), room, state, display)
+			}
+			if needArt {
+				if saved, err := SaveAlbumArt(ctx, device, room, ev.Track, signature); err != nil {
+					log.Printf("warning: album art: %v", err)
+				} else if saved {
+					savedArtSignature = signature
+				}
 			}
 		case <-renew:
 			renewCtx, renewCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -222,128 +228,4 @@ func trackSignature(info TrackInfo, display string) string {
 
 func shouldSkipDisplay(value string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "x-sonos")
-}
-
-func saveAlbumArt(ctx context.Context, device Device, room string, track TrackInfo, signature string) error {
-	artURI := strings.TrimSpace(track.AlbumArtURI)
-	if artURI == "" {
-		return nil
-	}
-
-	targetURL, err := resolveAlbumArtURL(device, artURI)
-	if err != nil {
-		return fmt.Errorf("resolve album art url: %w", err)
-	}
-
-	artCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(artCtx, http.MethodGet, targetURL, nil)
-	if err != nil {
-		return fmt.Errorf("create album art request: %w", err)
-	}
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("fetch album art: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		return fmt.Errorf("album art http status %s: %s", resp.Status, strings.TrimSpace(string(body)))
-	}
-
-	contentType := parseContentType(resp.Header.Get("Content-Type"))
-	path, err := albumArtPath(room, signature, contentType)
-	if err != nil {
-		return err
-	}
-
-	if _, err := os.Stat(path); err == nil {
-		return nil
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create album art directory: %w", err)
-	}
-
-	file, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("create album art file: %w", err)
-	}
-	defer file.Close()
-
-	if _, err := io.Copy(file, resp.Body); err != nil {
-		return fmt.Errorf("write album art body: %w", err)
-	}
-
-	return nil
-}
-
-func albumArtPath(room, signature, contentType string) (string, error) {
-	roomSlug := sanitizeForFilename(room)
-	if roomSlug == "" {
-		roomSlug = "room"
-	}
-	if signature == "" {
-		return "", errors.New("album art signature empty")
-	}
-	hash := sha1.Sum([]byte(signature))
-	hashHex := hex.EncodeToString(hash[:6])
-	ext := extensionFromContentType(contentType)
-	filename := fmt.Sprintf("%s-%s.%s", roomSlug, hashHex, ext)
-	return filepath.Join("art", filename), nil
-}
-
-func sanitizeForFilename(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	var builder strings.Builder
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-			builder.WriteRune(r)
-		case r == '-' || r == '_':
-			builder.WriteRune(r)
-		case r == ' ':
-			builder.WriteRune('_')
-		}
-	}
-	return strings.ToLower(builder.String())
-}
-
-func extensionFromContentType(contentType string) string {
-	contentType = strings.ToLower(strings.TrimSpace(contentType))
-	if idx := strings.Index(contentType, ";"); idx >= 0 {
-		contentType = strings.TrimSpace(contentType[:idx])
-	}
-	switch contentType {
-	case "image/jpeg", "image/jpg":
-		return "jpg"
-	case "image/png":
-		return "png"
-	case "image/gif":
-		return "gif"
-	case "image/webp":
-		return "webp"
-	case "":
-		return "jpg"
-	default:
-		return "bin"
-	}
-}
-
-func parseContentType(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-	if idx := strings.Index(raw, ";"); idx >= 0 {
-		return strings.TrimSpace(strings.ToLower(raw[:idx]))
-	}
-	return strings.ToLower(raw)
 }
