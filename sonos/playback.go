@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -39,7 +38,7 @@ func NowPlaying(ctx context.Context, device Device) (TrackInfo, error) {
 	}
 
 	payload := buildGetPositionInfoPayload()
-	log.Printf("debug: querying now playing at %s", controlURL)
+	logDebug("debug: querying now playing at %s", controlURL)
 	client := &http.Client{Timeout: 5 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, controlURL, bytes.NewReader(payload))
 	if err != nil {
@@ -77,7 +76,7 @@ func NowPlaying(ctx context.Context, device Device) (TrackInfo, error) {
 		return TrackInfo{}, err
 	}
 	if state, err := fetchTransportState(ctx, client, controlURL); err != nil {
-		log.Printf("debug: transport state fetch failed: %v", err)
+		logDebug("debug: transport state fetch failed: %v", err)
 	} else {
 		info.State = state
 	}

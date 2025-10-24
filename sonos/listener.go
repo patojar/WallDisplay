@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"log"
 	"net"
@@ -14,9 +15,27 @@ import (
 	"time"
 )
 
+// Display abstracts the image rendering backend (e.g. an RGB LED matrix).
+type Display interface {
+	Show(image.Image) error
+	Clear() error
+}
+
+// ListenerOptions customises runtime behaviour for ListenForEvents.
+type ListenerOptions struct {
+	Debug       bool
+	Display     Display
+	IdleTimeout time.Duration
+}
+
 // ListenForEvents subscribes to AVTransport events for the supplied device and
 // prints updates for the provided room until the context is canceled.
-func ListenForEvents(ctx context.Context, device Device, room, callbackPath string) error {
+func ListenForEvents(ctx context.Context, device Device, room, callbackPath string, opts ListenerOptions) error {
+	// default idle timeout
+	if opts.IdleTimeout <= 0 {
+		opts.IdleTimeout = 5 * time.Minute
+	}
+
 	bindAddr, err := determineLocalCallbackAddr(device)
 	if err != nil {
 		return err
@@ -28,6 +47,9 @@ func ListenForEvents(ctx context.Context, device Device, room, callbackPath stri
 	lastState := ""
 	lastTrackSignature := ""
 	savedArtSignature := ""
+	displayActive := false
+	var pauseSince time.Time
+	cacheToDisk := opts.Display == nil
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
@@ -73,7 +95,7 @@ func ListenForEvents(ctx context.Context, device Device, room, callbackPath stri
 		Host:   host,
 		Path:   callbackPath,
 	}
-	log.Printf("info: callback listening on %s", callbackURL.String())
+	logInfo("info: callback listening on %s", callbackURL.String())
 
 	go func() {
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -88,7 +110,7 @@ func ListenForEvents(ctx context.Context, device Device, room, callbackPath stri
 		_ = server.Shutdown(context.Background())
 		return err
 	}
-	log.Printf("info: subscribed to AVTransport events with SID %s", subscription.ID)
+	logInfo("info: subscribed to AVTransport events with SID %s", subscription.ID)
 
 	var renewTicker *time.Ticker
 	var renew <-chan time.Time
@@ -130,6 +152,40 @@ func ListenForEvents(ctx context.Context, device Device, room, callbackPath stri
 			signature := trackSignature(ev.Track, display)
 			needPrint := state != lastState || signature != lastTrackSignature
 			needArt := signature != "" && signature != savedArtSignature
+			idleState := display == "(idle)" || strings.EqualFold(state, "No Media") || strings.EqualFold(state, "Stopped")
+
+			if opts.Debug {
+				logDebug("debug: event room=%s state=%s display=%s sig=%s needPrint=%t needArt=%t idle=%t", room, state, display, signature, needPrint, needArt, idleState)
+			}
+
+			if idleState {
+				pauseSince = time.Time{}
+				savedArtSignature = ""
+				if opts.Display != nil && displayActive {
+					if err := opts.Display.Clear(); err != nil {
+						log.Printf("warning: clear display: %v", err)
+					}
+					displayActive = false
+				}
+			}
+
+			if strings.EqualFold(state, "Paused") {
+				if pauseSince.IsZero() {
+					pauseSince = time.Now()
+				}
+			} else {
+				pauseSince = time.Time{}
+			}
+
+			if opts.Display != nil && !pauseSince.IsZero() && time.Since(pauseSince) >= opts.IdleTimeout {
+				if displayActive {
+					if err := opts.Display.Clear(); err != nil {
+						log.Printf("warning: clear display after pause: %v", err)
+					}
+					displayActive = false
+				}
+				savedArtSignature = ""
+			}
 
 			if !needPrint && !needArt {
 				continue
@@ -140,10 +196,18 @@ func ListenForEvents(ctx context.Context, device Device, room, callbackPath stri
 				fmt.Printf("[%s] %s – %s | %s\n", time.Now().Format("15:04:05"), room, state, display)
 			}
 			if needArt {
-				if saved, err := SaveAlbumArt(ctx, device, room, ev.Track, signature); err != nil {
+				img, err := SaveAlbumArt(ctx, device, room, ev.Track, signature, cacheToDisk)
+				if err != nil {
 					log.Printf("warning: album art: %v", err)
-				} else if saved {
+				} else if img != nil {
 					savedArtSignature = signature
+					if opts.Display != nil {
+						if err := opts.Display.Show(img); err != nil {
+							log.Printf("warning: update display: %v", err)
+						} else {
+							displayActive = true
+						}
+					}
 				}
 			}
 		case <-renew:

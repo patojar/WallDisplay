@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"musicDisplay/matrixdisplay"
 	"musicDisplay/sonos"
 )
 
@@ -21,7 +23,22 @@ const (
 	defaultCallbackPath    = "/sonos/events"
 )
 
+var debugMode bool
+
+func infof(format string, args ...interface{}) {
+	if debugMode {
+		log.Printf("info: "+format, args...)
+	}
+}
+
 func main() {
+	debugFlag := flag.Bool("debug", false, "enable debug logging")
+	displayFlag := flag.Bool("display", false, "enable RGB LED matrix output")
+	flag.Parse()
+
+	debugMode = *debugFlag
+	sonos.SetDebugLogging(debugMode)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -32,7 +49,7 @@ func main() {
 
 	targetRoom := strings.TrimSpace(cfg.Room)
 	if targetRoom != "" {
-		log.Printf("info: filtering to room %q", targetRoom)
+		infof("filtering to room %q", targetRoom)
 	}
 
 	discoveryCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
@@ -77,8 +94,31 @@ func main() {
 		return
 	}
 
+	var display *matrixdisplay.Controller
+	if *displayFlag {
+		ctrl, err := matrixdisplay.NewController()
+		if err != nil {
+			log.Printf("warning: init matrix display: %v", err)
+		} else {
+			display = ctrl
+			infof("matrix display initialized")
+			defer func() {
+				if err := display.Close(); err != nil {
+					log.Printf("warning: close display: %v", err)
+				}
+			}()
+		}
+	} else {
+		infof("matrix display disabled")
+	}
+
 	fmt.Println("Listening for updates. Press Ctrl+C to exit.")
-	if err := sonos.ListenForEvents(ctx, *targetDevice, targetRoom, defaultCallbackPath); err != nil {
+	opts := sonos.ListenerOptions{
+		Debug:       debugMode,
+		Display:     display,
+		IdleTimeout: 5 * time.Minute,
+	}
+	if err := sonos.ListenForEvents(ctx, *targetDevice, targetRoom, defaultCallbackPath, opts); err != nil {
 		log.Printf("warning: %v", err)
 	}
 }

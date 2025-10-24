@@ -23,17 +23,76 @@ import (
 	xdraw "golang.org/x/image/draw"
 )
 
-// SaveAlbumArt downloads the current track art and stores a 64x64 PNG under ./art/.
-// It returns true if the image exists after the call (either already present or newly written).
-func SaveAlbumArt(ctx context.Context, device Device, room string, track TrackInfo, signature string) (bool, error) {
+// SaveAlbumArt retrieves the current track art (when available), returning a
+// 64x64 processed image. When cacheToDisk is true the artwork is persisted
+// under ./art/ so it can be reused by later runs; otherwise the image is kept
+// in-memory only.
+func SaveAlbumArt(ctx context.Context, device Device, room string, track TrackInfo, signature string, cacheToDisk bool) (image.Image, error) {
 	artURI := strings.TrimSpace(track.AlbumArtURI)
 	if artURI == "" {
-		return false, nil
+		return nil, nil
 	}
 
+	if !cacheToDisk {
+		data, err := fetchAlbumArtBytes(ctx, device, artURI)
+		if err != nil {
+			return nil, err
+		}
+		return processAlbumArt(data)
+	}
+
+	const storedContentType = "image/png"
+	path, err := albumArtPath(room, signature, storedContentType)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := os.Stat(path); err == nil {
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, fmt.Errorf("open album art file: %w", err)
+		}
+		defer file.Close()
+		img, err := png.Decode(file)
+		if err != nil {
+			return nil, fmt.Errorf("decode cached album art: %w", err)
+		}
+		return img, nil
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("stat album art file: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("create album art directory: %w", err)
+	}
+
+	data, err := fetchAlbumArtBytes(ctx, device, artURI)
+	if err != nil {
+		return nil, err
+	}
+
+	img, err := processAlbumArt(data)
+	if err != nil {
+		return nil, err
+	}
+
+	file, err := os.Create(path)
+	if err != nil {
+		return nil, fmt.Errorf("create album art file: %w", err)
+	}
+	defer file.Close()
+
+	if err := png.Encode(file, img); err != nil {
+		return nil, fmt.Errorf("encode album art: %w", err)
+	}
+
+	return img, nil
+}
+
+func fetchAlbumArtBytes(ctx context.Context, device Device, artURI string) ([]byte, error) {
 	targetURL, err := resolveAlbumArtURL(device, artURI)
 	if err != nil {
-		return false, fmt.Errorf("resolve album art url: %w", err)
+		return nil, fmt.Errorf("resolve album art url: %w", err)
 	}
 
 	artCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -41,7 +100,7 @@ func SaveAlbumArt(ctx context.Context, device Device, room string, track TrackIn
 
 	req, err := http.NewRequestWithContext(artCtx, http.MethodGet, targetURL, nil)
 	if err != nil {
-		return false, fmt.Errorf("create album art request: %w", err)
+		return nil, fmt.Errorf("create album art request: %w", err)
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -65,44 +124,33 @@ func SaveAlbumArt(ctx context.Context, device Device, room string, track TrackIn
 		}
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
 		resp.Body.Close()
-		return false, fmt.Errorf("album art http status %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("album art http status %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
 	if resp == nil {
-		return false, fmt.Errorf("fetch album art failed: %w", lastErr)
+		return nil, fmt.Errorf("fetch album art failed: %w", lastErr)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == http.StatusNotFound {
-			return false, fmt.Errorf("album art http status 404 after retries")
+			return nil, fmt.Errorf("album art http status 404 after retries")
 		}
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		return false, fmt.Errorf("album art http status %s: %s", resp.Status, strings.TrimSpace(string(body)))
-	}
-
-	const storedContentType = "image/png"
-	path, err := albumArtPath(room, signature, storedContentType)
-	if err != nil {
-		return false, err
-	}
-
-	if _, err := os.Stat(path); err == nil {
-		return true, nil
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return false, fmt.Errorf("create album art directory: %w", err)
+		return nil, fmt.Errorf("album art http status %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return false, fmt.Errorf("read album art body: %w", err)
+		return nil, fmt.Errorf("read album art body: %w", err)
 	}
+	return data, nil
+}
 
+func processAlbumArt(data []byte) (image.Image, error) {
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
-		return false, fmt.Errorf("decode album art: %w", err)
+		return nil, fmt.Errorf("decode album art: %w", err)
 	}
 
 	img = cropToSquare(img)
@@ -110,17 +158,7 @@ func SaveAlbumArt(ctx context.Context, device Device, room string, track TrackIn
 	dst := image.NewNRGBA(image.Rect(0, 0, 64, 64))
 	xdraw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, img.Bounds(), xdraw.Over, nil)
 
-	file, err := os.Create(path)
-	if err != nil {
-		return false, fmt.Errorf("create album art file: %w", err)
-	}
-	defer file.Close()
-
-	if err := png.Encode(file, dst); err != nil {
-		return false, fmt.Errorf("encode album art: %w", err)
-	}
-
-	return true, nil
+	return dst, nil
 }
 
 func cropToSquare(img image.Image) image.Image {
