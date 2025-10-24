@@ -25,6 +25,8 @@ func ListenForEvents(ctx context.Context, device Device, room, callbackPath stri
 
 	notifyCh := make(chan AVTransportEvent, 16)
 	serverErrors := make(chan error, 1)
+	lastState := ""
+	lastTrackSignature := ""
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
@@ -117,11 +119,20 @@ func ListenForEvents(ctx context.Context, device Device, room, callbackPath stri
 			if state == "" {
 				state = "Unknown"
 			}
-			track := formatTrackDisplay(ev.Track)
-			if track == "" {
-				track = "(idle)"
+			display := formatTrackDisplay(ev.Track)
+			if display == "" {
+				display = "(idle)"
 			}
-			fmt.Printf("[%s] %s – %s | %s\n", time.Now().Format("15:04:05"), room, state, track)
+			if shouldSkipDisplay(display) {
+				continue
+			}
+			signature := trackSignature(ev.Track, display)
+			if state == lastState && signature == lastTrackSignature {
+				continue
+			}
+			lastState = state
+			lastTrackSignature = signature
+			fmt.Printf("[%s] %s – %s | %s\n", time.Now().Format("15:04:05"), room, state, display)
 		case <-renew:
 			renewCtx, renewCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			newTimeout, err := RenewAVTransport(renewCtx, subscription, subscription.Timeout)
@@ -185,4 +196,23 @@ func determineLocalCallbackAddr(device Device) (*net.TCPAddr, error) {
 	}
 
 	return &net.TCPAddr{IP: ip, Zone: udpAddr.Zone}, nil
+}
+
+func trackSignature(info TrackInfo, display string) string {
+	fields := []string{
+		info.Title,
+		info.Artist,
+		info.Album,
+		info.StreamInfo,
+		info.URI,
+		display,
+	}
+	for i := range fields {
+		fields[i] = strings.ToLower(strings.TrimSpace(fields[i]))
+	}
+	return strings.Join(fields, "|")
+}
+
+func shouldSkipDisplay(value string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "x-sonos")
 }
