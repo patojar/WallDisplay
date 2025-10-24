@@ -1,4 +1,4 @@
-package main
+package sonos
 
 import (
 	"context"
@@ -12,22 +12,22 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"musicDisplay/sonos"
 )
 
-func listenForEvents(ctx context.Context, device sonos.Device, room string) error {
+// ListenForEvents subscribes to AVTransport events for the supplied device and
+// prints updates for the provided room until the context is canceled.
+func ListenForEvents(ctx context.Context, device Device, room, callbackPath string) error {
 	bindAddr, err := determineLocalCallbackAddr(device)
 	if err != nil {
 		return err
 	}
 	bindAddr.Port = 0
 
-	notifyCh := make(chan sonos.AVTransportEvent, 16)
+	notifyCh := make(chan AVTransportEvent, 16)
 	serverErrors := make(chan error, 1)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc(defaultCallbackPath, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "NOTIFY" {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -39,7 +39,7 @@ func listenForEvents(ctx context.Context, device sonos.Device, room string) erro
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		event, err := sonos.ParseAVTransportEvent(body)
+		event, err := ParseAVTransportEvent(body)
 		if err != nil {
 			log.Printf("warning: parse event: %v", err)
 			log.Printf("warning: event payload: %s", string(body))
@@ -68,7 +68,7 @@ func listenForEvents(ctx context.Context, device sonos.Device, room string) erro
 	callbackURL := &url.URL{
 		Scheme: "http",
 		Host:   host,
-		Path:   defaultCallbackPath,
+		Path:   callbackPath,
 	}
 	log.Printf("info: callback listening on %s", callbackURL.String())
 
@@ -79,7 +79,7 @@ func listenForEvents(ctx context.Context, device sonos.Device, room string) erro
 	}()
 
 	subCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	subscription, err := sonos.SubscribeAVTransport(subCtx, device, callbackURL.String(), 30*time.Minute)
+	subscription, err := SubscribeAVTransport(subCtx, device, callbackURL.String(), 30*time.Minute)
 	cancel()
 	if err != nil {
 		_ = server.Shutdown(context.Background())
@@ -106,7 +106,7 @@ func listenForEvents(ctx context.Context, device sonos.Device, room string) erro
 			_ = server.Shutdown(shutdownCtx)
 			shutdownCancel()
 			unsubscribeCtx, unsubscribeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			err := sonos.UnsubscribeAVTransport(unsubscribeCtx, subscription)
+			err := UnsubscribeAVTransport(unsubscribeCtx, subscription)
 			unsubscribeCancel()
 			if err != nil {
 				log.Printf("warning: unsubscribe failed: %v", err)
@@ -124,7 +124,7 @@ func listenForEvents(ctx context.Context, device sonos.Device, room string) erro
 			fmt.Printf("[%s] %s – %s | %s\n", time.Now().Format("15:04:05"), room, state, track)
 		case <-renew:
 			renewCtx, renewCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			newTimeout, err := sonos.RenewAVTransport(renewCtx, subscription, subscription.Timeout)
+			newTimeout, err := RenewAVTransport(renewCtx, subscription, subscription.Timeout)
 			renewCancel()
 			if err != nil {
 				log.Printf("warning: renew subscription failed: %v", err)
@@ -145,7 +145,7 @@ func listenForEvents(ctx context.Context, device sonos.Device, room string) erro
 	}
 }
 
-func determineLocalCallbackAddr(device sonos.Device) (*net.TCPAddr, error) {
+func determineLocalCallbackAddr(device Device) (*net.TCPAddr, error) {
 	remoteIP := strings.TrimSpace(device.IP)
 	remotePort := "1400"
 

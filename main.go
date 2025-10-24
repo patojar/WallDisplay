@@ -9,6 +9,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"musicDisplay/sonos"
 )
 
 const (
@@ -33,7 +35,9 @@ func main() {
 		log.Printf("info: filtering to room %q", targetRoom)
 	}
 
-	devices, err := discoverDevices(ctx, targetRoom)
+	discoveryCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+	devices, err := sonos.Discover(discoveryCtx, discoveryTimeout, targetRoom)
+	cancel()
 	if err != nil {
 		log.Fatalf("failed to discover Sonos devices: %v", err)
 	}
@@ -42,18 +46,27 @@ func main() {
 		return
 	}
 
-	devices, enrichmentErr := enrichDeviceMetadata(ctx, devices)
+	enrichmentWindow := time.Duration(len(devices)) * enrichmentPerDevice
+	if enrichmentWindow < enrichmentMinimumTotal {
+		enrichmentWindow = enrichmentMinimumTotal
+	}
+	enrichmentCtx, cancel := context.WithTimeout(ctx, enrichmentWindow)
+	enriched, enrichmentErr := sonos.EnrichDevices(enrichmentCtx, devices)
+	cancel()
+	if len(enriched) > 0 {
+		devices = enriched
+	}
 	if enrichmentErr != nil {
 		log.Printf("warning: failed to enrich all devices: %v", enrichmentErr)
 	}
 
-	statuses, targetDevice := gatherRoomStatuses(ctx, devices, targetRoom)
+	statuses, targetDevice := sonos.GatherRoomStatuses(ctx, devices, targetRoom)
 	if len(statuses) == 0 {
 		fmt.Println("No Sonos devices found after filtering.")
 		return
 	}
 
-	printRoomStatuses(statuses)
+	sonos.PrintRoomStatuses(statuses)
 
 	if targetRoom == "" {
 		return
@@ -65,7 +78,7 @@ func main() {
 	}
 
 	fmt.Println("Listening for updates. Press Ctrl+C to exit.")
-	if err := listenForEvents(ctx, *targetDevice, targetRoom); err != nil {
+	if err := sonos.ListenForEvents(ctx, *targetDevice, targetRoom, defaultCallbackPath); err != nil {
 		log.Printf("warning: %v", err)
 	}
 }

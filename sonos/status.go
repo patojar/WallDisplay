@@ -1,4 +1,4 @@
-package main
+package sonos
 
 import (
 	"context"
@@ -6,20 +6,22 @@ import (
 	"log"
 	"strings"
 	"time"
-
-	"musicDisplay/sonos"
 )
 
-type roomStatus struct {
+// RoomStatus represents the playback state of a Sonos room.
+type RoomStatus struct {
 	Room  string
 	State string
 	Track string
 }
 
-func gatherRoomStatuses(ctx context.Context, devices []sonos.Device, targetRoom string) ([]roomStatus, *sonos.Device) {
-	statuses := make([]roomStatus, 0, len(devices))
+// GatherRoomStatuses collects the playback status for each discovered device. If
+// targetRoom is supplied, it returns a pointer to the first matching device to
+// support subsequent event subscriptions.
+func GatherRoomStatuses(ctx context.Context, devices []Device, targetRoom string) ([]RoomStatus, *Device) {
+	statuses := make([]RoomStatus, 0, len(devices))
 
-	var targetDevice *sonos.Device
+	var targetDevice *Device
 
 	for i := range devices {
 		device := devices[i]
@@ -43,14 +45,34 @@ func gatherRoomStatuses(ctx context.Context, devices []sonos.Device, targetRoom 
 	return statuses, targetDevice
 }
 
-func buildRoomStatus(ctx context.Context, device sonos.Device, room string) roomStatus {
+// PrintRoomStatuses renders the collected statuses in a table format.
+func PrintRoomStatuses(statuses []RoomStatus) {
+	roomColumnWidth := len("Room")
+	stateColumnWidth := len("State")
+	for _, status := range statuses {
+		if len(status.Room) > roomColumnWidth {
+			roomColumnWidth = len(status.Room)
+		}
+		if len(status.State) > stateColumnWidth {
+			stateColumnWidth = len(status.State)
+		}
+	}
+
+	fmt.Printf("%-*s  %-*s  %s\n", roomColumnWidth, "Room", stateColumnWidth, "State", "Now Playing")
+	fmt.Printf("%s  %s  %s\n", strings.Repeat("-", roomColumnWidth), strings.Repeat("-", stateColumnWidth), strings.Repeat("-", len("Now Playing")))
+	for _, status := range statuses {
+		fmt.Printf("%-*s  %-*s  %s\n", roomColumnWidth, status.Room, stateColumnWidth, status.State, status.Track)
+	}
+}
+
+func buildRoomStatus(ctx context.Context, device Device, room string) RoomStatus {
 	playbackCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	info, err := sonos.NowPlaying(playbackCtx, device)
+	info, err := NowPlaying(playbackCtx, device)
 	if err != nil {
 		log.Printf("warning: now playing for %s: %v", room, err)
-		return roomStatus{
+		return RoomStatus{
 			Room:  room,
 			State: "Unavailable",
 			Track: "Unavailable",
@@ -67,14 +89,14 @@ func buildRoomStatus(ctx context.Context, device sonos.Device, room string) room
 		state = "Unknown"
 	}
 
-	return roomStatus{
+	return RoomStatus{
 		Room:  room,
 		State: state,
 		Track: track,
 	}
 }
 
-func deriveRoomName(device sonos.Device) string {
+func deriveRoomName(device Device) string {
 	if room := strings.TrimSpace(device.Metadata.RoomName); room != "" {
 		return room
 	}
@@ -84,14 +106,14 @@ func deriveRoomName(device sonos.Device) string {
 	return deriveFallbackName(device)
 }
 
-func deriveFallbackName(device sonos.Device) string {
+func deriveFallbackName(device Device) string {
 	if friendly, ok := device.Headers["FRIENDLYNAME"]; ok && strings.TrimSpace(friendly) != "" {
 		return friendly
 	}
 	return device.USN
 }
 
-func deriveFallbackRoomName(device sonos.Device, meta sonos.DeviceMetadata) string {
+func deriveFallbackRoomName(device Device, meta DeviceMetadata) string {
 	if room, ok := device.Headers["ROOMNAME"]; ok && strings.TrimSpace(room) != "" {
 		return strings.TrimSpace(room)
 	}
@@ -104,7 +126,7 @@ func deriveFallbackRoomName(device sonos.Device, meta sonos.DeviceMetadata) stri
 	return ""
 }
 
-func formatTrackDisplay(info sonos.TrackInfo) string {
+func formatTrackDisplay(info TrackInfo) string {
 	title := strings.TrimSpace(info.Title)
 	artist := strings.TrimSpace(info.Artist)
 	switch {
@@ -146,23 +168,4 @@ func formatStateDisplay(raw string) string {
 
 func roomMatches(roomName, target string) bool {
 	return strings.EqualFold(strings.TrimSpace(roomName), strings.TrimSpace(target))
-}
-
-func printRoomStatuses(statuses []roomStatus) {
-	roomColumnWidth := len("Room")
-	stateColumnWidth := len("State")
-	for _, status := range statuses {
-		if len(status.Room) > roomColumnWidth {
-			roomColumnWidth = len(status.Room)
-		}
-		if len(status.State) > stateColumnWidth {
-			stateColumnWidth = len(status.State)
-		}
-	}
-
-	fmt.Printf("%-*s  %-*s  %s\n", roomColumnWidth, "Room", stateColumnWidth, "State", "Now Playing")
-	fmt.Printf("%s  %s  %s\n", strings.Repeat("-", roomColumnWidth), strings.Repeat("-", stateColumnWidth), strings.Repeat("-", len("Now Playing")))
-	for _, status := range statuses {
-		fmt.Printf("%-*s  %-*s  %s\n", roomColumnWidth, status.Room, stateColumnWidth, status.State, status.Track)
-	}
 }

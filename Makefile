@@ -19,6 +19,10 @@ build-amd:
 	@mkdir -p bin
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/$(BINARY)-amd64 ./
 
+build-mac:
+	@mkdir -p bin
+	CGO_ENABLED=0 go build -o bin/$(BINARY)-arm64 ./
+
 test:
 	go test ./...
 
