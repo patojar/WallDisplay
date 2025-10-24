@@ -9,19 +9,22 @@ import (
 	"html"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
 
 // TrackInfo represents the primary metadata for the track playing on a Sonos device.
 type TrackInfo struct {
-	Title      string
-	Artist     string
-	Album      string
-	StreamInfo string
-	URI        string
-	State      string
+	Title       string
+	Artist      string
+	Album       string
+	StreamInfo  string
+	URI         string
+	State       string
+	AlbumArtURI string
 }
 
 // NowPlaying queries a Sonos device for the currently playing track metadata.
@@ -238,6 +241,7 @@ type didlItem struct {
 	StreamInfo   string
 	ProgramTitle string
 	RadioShow    string
+	AlbumArtURI  string
 }
 
 func buildTrackInfo(resp positionInfoResponse) (TrackInfo, error) {
@@ -260,6 +264,7 @@ func buildTrackInfo(resp positionInfoResponse) (TrackInfo, error) {
 	info.Artist = strings.TrimSpace(item.Creator)
 	info.Album = strings.TrimSpace(item.Album)
 	info.StreamInfo = strings.TrimSpace(item.StreamInfo)
+	info.AlbumArtURI = strings.TrimSpace(item.AlbumArtURI)
 
 	if info.Title == "" {
 		if strings.TrimSpace(item.ProgramTitle) != "" {
@@ -272,6 +277,98 @@ func buildTrackInfo(resp positionInfoResponse) (TrackInfo, error) {
 	}
 
 	return info, nil
+}
+
+// FetchCurrentAlbumArt downloads the album artwork for the track currently playing on the device.
+// The returned byte slice contains the raw image data and contentType reports the HTTP Content-Type header, if any.
+func FetchCurrentAlbumArt(ctx context.Context, device Device) ([]byte, string, error) {
+	if ctx == nil {
+		return nil, "", errors.New("sonos: nil context")
+	}
+
+	info, err := NowPlaying(ctx, device)
+	if err != nil {
+		return nil, "", err
+	}
+
+	if strings.TrimSpace(info.AlbumArtURI) == "" {
+		return nil, "", errors.New("sonos: album art unavailable")
+	}
+
+	targetURL, err := resolveAlbumArtURL(device, info.AlbumArtURI)
+	if err != nil {
+		return nil, "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("sonos: create album art request: %w", err)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("sonos: fetch album art: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return nil, "", fmt.Errorf("sonos: album art http status %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("sonos: read album art body: %w", err)
+	}
+
+	return data, resp.Header.Get("Content-Type"), nil
+}
+
+func resolveAlbumArtURL(device Device, artURI string) (string, error) {
+	artURI = strings.TrimSpace(artURI)
+	if artURI == "" {
+		return "", errors.New("sonos: album art uri empty")
+	}
+
+	parsed, err := url.Parse(artURI)
+	if err != nil {
+		return "", fmt.Errorf("sonos: parse album art uri: %w", err)
+	}
+	if parsed.IsAbs() {
+		return parsed.String(), nil
+	}
+
+	base, err := albumArtBaseURL(device)
+	if err != nil {
+		return "", err
+	}
+
+	resolved := base.ResolveReference(parsed)
+	return resolved.String(), nil
+}
+
+func albumArtBaseURL(device Device) (*url.URL, error) {
+	if loc := strings.TrimSpace(device.Location); loc != "" {
+		base, err := url.Parse(loc)
+		if err == nil && base.Scheme != "" && base.Host != "" {
+			base.Path = "/"
+			base.RawQuery = ""
+			base.Fragment = ""
+			return base, nil
+		}
+	}
+
+	if ip := strings.TrimSpace(device.IP); ip != "" {
+		host := net.JoinHostPort(ip, "1400")
+		base, err := url.Parse("http://" + host)
+		if err != nil {
+			return nil, fmt.Errorf("sonos: construct album art base url: %w", err)
+		}
+		return base, nil
+	}
+
+	return nil, errors.New("sonos: album art base url unavailable")
 }
 
 func parseTrackMetadata(xmlString string) (didlItem, error) {
@@ -331,7 +428,7 @@ func parseTrackMetadata(xmlString string) (didlItem, error) {
 				case "album":
 					item.Album = value
 				case "albumArtURI":
-					// Ignored for now.
+					item.AlbumArtURI = value
 				}
 			case "urn:schemas-rinconnetworks-com:metadata-1-0/":
 				switch field.Local {

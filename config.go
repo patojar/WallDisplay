@@ -12,8 +12,7 @@ import (
 
 // Config contains optional configuration overrides loaded from disk.
 type Config struct {
-	Room        string `json:"room"`
-	CallbackURL string `json:"callback_url"`
+	Room string `json:"room"`
 }
 
 func loadConfig(path string) (Config, error) {

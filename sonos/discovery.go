@@ -37,8 +37,9 @@ type Device struct {
 
 // Discover queries the local network for Sonos devices using SSDP.
 // The context governs the lifetime of the discovery. A zero timeout
-// falls back to a sensible default.
-func Discover(ctx context.Context, timeout time.Duration) ([]Device, error) {
+// falls back to a sensible default. If targetRoom is non-empty, discovery
+// stops as soon as a matching device is observed.
+func Discover(ctx context.Context, timeout time.Duration, targetRoom string) ([]Device, error) {
 	if ctx == nil {
 		return nil, errors.New("sonos: nil context")
 	}
@@ -46,6 +47,8 @@ func Discover(ctx context.Context, timeout time.Duration) ([]Device, error) {
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
+
+	targetRoomCanonical := canonicalRoomName(targetRoom)
 
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
@@ -58,11 +61,11 @@ func Discover(ctx context.Context, timeout time.Duration) ([]Device, error) {
 	}
 
 	deadline := time.Now().Add(timeout)
-	deviceMap := make(map[string]Device)
 	buf := make([]byte, 2048)
+	indexByKey := make(map[string]int)
+	devices := make([]Device, 0, 4)
 
 	lastResponse := time.Time{}
-
 	for {
 		if ctx.Err() != nil {
 			break
@@ -102,17 +105,26 @@ func Discover(ctx context.Context, timeout time.Duration) ([]Device, error) {
 		}
 		device.IP = addr.IP.String()
 
+		lastResponse = time.Now()
+
+		if targetRoomCanonical != "" && device.IsSonos && roomMatchesHeader(device, targetRoomCanonical) {
+			return []Device{device}, nil
+		}
+
 		key := device.USN
 		if key == "" {
 			key = device.IP
 		}
-		deviceMap[key] = device
-		lastResponse = time.Now()
+		if idx, ok := indexByKey[key]; ok {
+			devices[idx] = device
+		} else {
+			indexByKey[key] = len(devices)
+			devices = append(devices, device)
+		}
 	}
 
-	devices := make([]Device, 0, len(deviceMap))
-	for _, device := range deviceMap {
-		devices = append(devices, device)
+	if len(devices) == 0 {
+		return nil, nil
 	}
 
 	sort.Slice(devices, func(i, j int) bool {
@@ -123,6 +135,54 @@ func Discover(ctx context.Context, timeout time.Duration) ([]Device, error) {
 	})
 
 	return devices, nil
+}
+
+func canonicalRoomName(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func roomMatchesHeader(device Device, targetCanonical string) bool {
+	if targetCanonical == "" {
+		return false
+	}
+	for _, candidate := range headerRoomCandidates(device) {
+		if candidate == targetCanonical {
+			return true
+		}
+	}
+	return false
+}
+
+func headerRoomCandidates(device Device) []string {
+	candidates := make([]string, 0, 3)
+	seen := make(map[string]struct{}, 3)
+
+	if room := canonicalRoomName(device.Headers["ROOMNAME"]); room != "" {
+		candidates = append(candidates, room)
+		seen[room] = struct{}{}
+	}
+
+	if friendlyRaw := strings.TrimSpace(device.Headers["FRIENDLYNAME"]); friendlyRaw != "" {
+		if friendly := canonicalRoomName(friendlyRaw); friendly != "" {
+			if _, ok := seen[friendly]; !ok {
+				candidates = append(candidates, friendly)
+				seen[friendly] = struct{}{}
+			}
+		}
+
+		parts := strings.Fields(friendlyRaw)
+		if len(parts) > 1 {
+			base := canonicalRoomName(strings.Join(parts[:len(parts)-1], " "))
+			if base != "" {
+				if _, ok := seen[base]; !ok {
+					candidates = append(candidates, base)
+					seen[base] = struct{}{}
+				}
+			}
+		}
+	}
+
+	return candidates
 }
 
 func sendSearchRequests(conn *net.UDPConn, target *net.UDPAddr) error {

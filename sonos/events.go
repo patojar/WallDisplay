@@ -157,8 +157,9 @@ func ParseAVTransportEvent(body []byte) (AVTransportEvent, error) {
 
 	lastChange := ""
 	for _, p := range props.Properties {
-		if strings.TrimSpace(p.LastChange) != "" {
-			lastChange = p.LastChange
+		raw := string(p.LastChange.Data)
+		if strings.TrimSpace(raw) != "" {
+			lastChange = raw
 			break
 		}
 	}
@@ -166,9 +167,9 @@ func ParseAVTransportEvent(body []byte) (AVTransportEvent, error) {
 		return event, fmt.Errorf("sonos: event missing LastChange")
 	}
 
-	decoded := sanitizeInvalidEntities(html.UnescapeString(lastChange))
+	prepared := prepareLastChangeXML(lastChange)
 	inner := avTransportLastChange{}
-	if err := xml.Unmarshal([]byte(decoded), &inner); err != nil {
+	if err := xml.Unmarshal([]byte(prepared), &inner); err != nil {
 		return event, fmt.Errorf("sonos: decode last change: %w", err)
 	}
 
@@ -198,12 +199,123 @@ func ParseAVTransportEvent(body []byte) (AVTransportEvent, error) {
 	return event, nil
 }
 
+func prepareLastChangeXML(raw string) string {
+	const (
+		placeholderQuot = "__SONOS_ATTR_QUOT__"
+		placeholderApos = "__SONOS_ATTR_APOS__"
+	)
+
+	temp := strings.ReplaceAll(raw, "&amp;quot;", placeholderQuot)
+	temp = strings.ReplaceAll(temp, "&amp;apos;", placeholderApos)
+
+	decoded := html.UnescapeString(temp)
+
+	decoded = strings.ReplaceAll(decoded, placeholderQuot, "&quot;")
+	decoded = strings.ReplaceAll(decoded, placeholderApos, "&apos;")
+
+	escaped := escapeAttributeMarkup(decoded)
+	return sanitizeInvalidEntities(escaped)
+}
+
+func escapeAttributeMarkup(s string) string {
+	if s == "" {
+		return s
+	}
+
+	inAttr := false
+	var attrQuote byte
+	nestedDepth := 0
+	inNestedTag := false
+	var nestedAttrQuote byte
+
+	var b strings.Builder
+	b.Grow(len(s))
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if !inAttr {
+			if ch == '"' || ch == '\'' {
+				inAttr = true
+				attrQuote = ch
+			}
+			b.WriteByte(ch)
+			continue
+		}
+
+		switch ch {
+		case '"', '\'':
+			if nestedAttrQuote != 0 {
+				if ch == nestedAttrQuote {
+					nestedAttrQuote = 0
+				}
+				if ch == '"' {
+					b.WriteString("&quot;")
+				} else {
+					b.WriteString("&apos;")
+				}
+				continue
+			}
+
+			if inNestedTag {
+				nestedAttrQuote = ch
+				if ch == '"' {
+					b.WriteString("&quot;")
+				} else {
+					b.WriteString("&apos;")
+				}
+				continue
+			}
+
+			if ch == attrQuote && nestedDepth == 0 {
+				inAttr = false
+				b.WriteByte(ch)
+				continue
+			}
+
+			if ch == '"' {
+				b.WriteString("&quot;")
+			} else {
+				b.WriteString("&apos;")
+			}
+		case '&':
+			b.WriteString("&amp;")
+		case '<':
+			if i+1 < len(s) && s[i+1] == '/' {
+				if nestedDepth > 0 {
+					nestedDepth--
+				}
+				inNestedTag = true
+			} else {
+				nestedDepth++
+				inNestedTag = true
+			}
+			b.WriteString("&lt;")
+		case '>':
+			if inNestedTag {
+				inNestedTag = false
+			}
+			if nestedDepth > 0 && i > 0 && s[i-1] == '/' {
+				nestedDepth--
+			}
+			b.WriteString("&gt;")
+		default:
+			b.WriteByte(ch)
+		}
+	}
+
+	return b.String()
+}
+
 type eventPropertySet struct {
 	Properties []eventProperty `xml:"property"`
 }
 
 type eventProperty struct {
-	LastChange string `xml:"LastChange"`
+	LastChange innerXML `xml:"LastChange"`
+}
+
+type innerXML struct {
+	Data []byte `xml:",innerxml"`
 }
 
 type avTransportLastChange struct {

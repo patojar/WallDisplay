@@ -1,6 +1,7 @@
 package sonos
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -31,7 +32,7 @@ func TestNowPlayingTrack(t *testing.T) {
     <u:GetPositionInfoResponse xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
       <Track>1</Track>
       <TrackDuration>0:03:30</TrackDuration>
-      <TrackMetaData>&lt;DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/"&gt;&lt;item id="1" parentID="0" restricted="true"&gt;&lt;dc:title&gt;My Song&lt;/dc:title&gt;&lt;dc:creator&gt;The Artists&lt;/dc:creator&gt;&lt;upnp:album&gt;My Album&lt;/upnp:album&gt;&lt;r:streamContent&gt;Artist - My Song&lt;/r:streamContent&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;</TrackMetaData>
+      <TrackMetaData>&lt;DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/"&gt;&lt;item id="1" parentID="0" restricted="true"&gt;&lt;dc:title&gt;My Song&lt;/dc:title&gt;&lt;dc:creator&gt;The Artists&lt;/dc:creator&gt;&lt;upnp:album&gt;My Album&lt;/upnp:album&gt;&lt;upnp:albumArtURI&gt;/art.jpg&lt;/upnp:albumArtURI&gt;&lt;r:streamContent&gt;Artist - My Song&lt;/r:streamContent&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;</TrackMetaData>
       <TrackURI>x-sonos-spotify:spotify%3atrack%3a123</TrackURI>
     </u:GetPositionInfoResponse>
   </s:Body>
@@ -82,6 +83,9 @@ func TestNowPlayingTrack(t *testing.T) {
 	if got, want := info.State, "PLAYING"; got != want {
 		t.Fatalf("State = %q, want %q", got, want)
 	}
+	if got, want := info.AlbumArtURI, "/art.jpg"; got != want {
+		t.Fatalf("AlbumArtURI = %q, want %q", got, want)
+	}
 }
 
 func TestNowPlayingFault(t *testing.T) {
@@ -120,7 +124,7 @@ func TestNowPlayingFault(t *testing.T) {
 
 func TestBuildTrackInfoParsesMetadata(t *testing.T) {
 	meta := positionInfoResponse{
-		TrackMetaData: `&lt;DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/"&gt;&lt;item&gt;&lt;dc:title&gt;Unit Test Song&lt;/dc:title&gt;&lt;dc:creator&gt;Tester&lt;/dc:creator&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;`,
+		TrackMetaData: `&lt;DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/"&gt;&lt;item&gt;&lt;dc:title&gt;Unit Test Song&lt;/dc:title&gt;&lt;dc:creator&gt;Tester&lt;/dc:creator&gt;&lt;upnp:albumArtURI&gt;/cover.png&lt;/upnp:albumArtURI&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;`,
 	}
 
 	info, err := buildTrackInfo(meta)
@@ -132,6 +136,9 @@ func TestBuildTrackInfoParsesMetadata(t *testing.T) {
 	}
 	if info.Artist != "Tester" {
 		t.Fatalf("Artist = %q, want Tester", info.Artist)
+	}
+	if info.AlbumArtURI != "/cover.png" {
+		t.Fatalf("AlbumArtURI = %q, want /cover.png", info.AlbumArtURI)
 	}
 }
 
@@ -157,5 +164,73 @@ func TestSanitizeInvalidEntities(t *testing.T) {
 	want := "Rock &amp;vibe &amp; Roll &amp;"
 	if got := sanitizeInvalidEntities(input); got != want {
 		t.Fatalf("sanitizeInvalidEntities = %q, want %q", got, want)
+	}
+}
+
+func TestFetchCurrentAlbumArt(t *testing.T) {
+	artData := []byte{0xff, 0xd8, 0xff, 0xd9}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/MediaRenderer/AVTransport/Control":
+			payload, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			defer r.Body.Close()
+
+			switch {
+			case strings.Contains(string(payload), "GetPositionInfo"):
+				body := `<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <u:GetPositionInfoResponse xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+      <Track>1</Track>
+      <TrackDuration>0:03:30</TrackDuration>
+      <TrackMetaData>&lt;DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"&gt;&lt;item&gt;&lt;dc:title&gt;Cover Test&lt;/dc:title&gt;&lt;dc:creator&gt;Artist&lt;/dc:creator&gt;&lt;upnp:albumArtURI&gt;/art.jpg&lt;/upnp:albumArtURI&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;</TrackMetaData>
+      <TrackURI>x-sonos-spotify:spotify%3atrack%3a456</TrackURI>
+    </u:GetPositionInfoResponse>
+  </s:Body>
+</s:Envelope>`
+				fmt.Fprint(w, body)
+			case strings.Contains(string(payload), "GetTransportInfo"):
+				body := `<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <u:GetTransportInfoResponse xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+      <CurrentTransportState>PLAYING</CurrentTransportState>
+      <CurrentTransportStatus>OK</CurrentTransportStatus>
+      <CurrentSpeed>1</CurrentSpeed>
+    </u:GetTransportInfoResponse>
+  </s:Body>
+</s:Envelope>`
+				fmt.Fprint(w, body)
+			default:
+				t.Fatalf("unexpected SOAP action: %s", string(payload))
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/art.jpg":
+			w.Header().Set("Content-Type", "image/jpeg")
+			if _, err := w.Write(artData); err != nil {
+				t.Fatalf("write art: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	device := Device{
+		Location: server.URL + "/xml/device_description.xml",
+	}
+
+	data, contentType, err := FetchCurrentAlbumArt(context.Background(), device)
+	if err != nil {
+		t.Fatalf("FetchCurrentAlbumArt error: %v", err)
+	}
+	if !bytes.Equal(data, artData) {
+		t.Fatalf("album art bytes mismatch: got %v, want %v", data, artData)
+	}
+	if contentType != "image/jpeg" {
+		t.Fatalf("contentType = %q, want image/jpeg", contentType)
 	}
 }

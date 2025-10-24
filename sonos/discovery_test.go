@@ -39,7 +39,7 @@ func TestParseResponse(t *testing.T) {
 }
 
 func TestDiscoverRejectsNilContext(t *testing.T) {
-	if _, err := Discover(nil, time.Second); err == nil {
+	if _, err := Discover(nil, time.Second, ""); err == nil {
 		t.Fatal("expected error when passing nil context")
 	}
 }
@@ -78,5 +78,28 @@ func TestSendSearchRequests(t *testing.T) {
 	case <-received:
 	case <-time.After(1500 * time.Millisecond):
 		t.Fatal("did not receive UDP packet from sendSearchRequests")
+	}
+}
+
+func TestRoomMatchesHeader(t *testing.T) {
+	device := Device{
+		Headers: map[string]string{
+			"ROOMNAME":     " Living Room ",
+			"FRIENDLYNAME": "Living Room Player",
+		},
+	}
+
+	canonical := canonicalRoomName("living room")
+	if !roomMatchesHeader(device, canonical) {
+		t.Fatal("expected roomMatchesHeader to match on ROOMNAME header")
+	}
+
+	device.Headers["ROOMNAME"] = ""
+	if !roomMatchesHeader(device, canonical) {
+		t.Fatal("expected roomMatchesHeader to match on FRIENDLYNAME header")
+	}
+
+	if roomMatchesHeader(device, canonicalRoomName("kitchen")) {
+		t.Fatal("roomMatchesHeader should not match different room")
 	}
 }
