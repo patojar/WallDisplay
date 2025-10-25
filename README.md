@@ -91,6 +91,7 @@ Flags:
 
 - `-display` enables the RGB matrix output. Without it, the app only prints Sonos status to the console.
 - `-debug` adds verbose logging for discovery and event handling.
+- `-display-test <path>` loads an image from disk, scales it to 64×64, shows it on the matrix, and exits after you press `Ctrl+C`.
 
 When the program starts it:
 

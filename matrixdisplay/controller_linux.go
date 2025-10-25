@@ -11,11 +11,7 @@ import (
 	rgbmatrix "github.com/mcuadros/go-rpi-rgb-led-matrix"
 )
 
-const (
-	panelWidth        = 64
-	panelHeight       = 64
-	defaultBrightness = 60
-)
+const defaultBrightness = 60
 
 // Controller manages a HUB75 RGB LED matrix and provides helpers to display
 // 64x64 images on the panel.
@@ -28,8 +24,8 @@ type Controller struct {
 // when finished to release resources.
 func NewController() (*Controller, error) {
 	config := rgbmatrix.DefaultConfig
-	config.Rows = panelHeight
-	config.Cols = panelWidth
+	config.Rows = PanelHeight
+	config.Cols = PanelWidth
 	config.ChainLength = 1
 	config.Parallel = 1
 	config.Brightness = defaultBrightness
@@ -62,8 +58,8 @@ func (c *Controller) Show(img image.Image) error {
 		return fmt.Errorf("matrixdisplay: nil image")
 	}
 	bounds := img.Bounds()
-	if bounds.Dx() != panelWidth || bounds.Dy() != panelHeight {
-		return fmt.Errorf("matrixdisplay: image dimensions must be %dx%d, got %dx%d", panelWidth, panelHeight, bounds.Dx(), bounds.Dy())
+	if bounds.Dx() != PanelWidth || bounds.Dy() != PanelHeight {
+		return fmt.Errorf("matrixdisplay: image dimensions must be %dx%d, got %dx%d", PanelWidth, PanelHeight, bounds.Dx(), bounds.Dy())
 	}
 
 	draw.Draw(c.canvas, c.canvas.Bounds(), img, bounds.Min, draw.Src)

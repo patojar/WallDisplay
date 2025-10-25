@@ -4,12 +4,18 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"log"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/image/draw"
 
 	"musicDisplay/matrixdisplay"
 	"musicDisplay/sonos"
@@ -34,6 +40,7 @@ func infof(format string, args ...interface{}) {
 func main() {
 	debugFlag := flag.Bool("debug", false, "enable debug logging")
 	displayFlag := flag.Bool("display", false, "enable RGB LED matrix output")
+	displayTestFlag := flag.String("display-test", "", "path to an image to display on the matrix and exit")
 	flag.Parse()
 
 	debugMode = *debugFlag
@@ -95,7 +102,8 @@ func main() {
 	}
 
 	var display *matrixdisplay.Controller
-	if *displayFlag {
+	needDisplay := *displayFlag || strings.TrimSpace(*displayTestFlag) != ""
+	if needDisplay {
 		ctrl, err := matrixdisplay.NewController()
 		if err != nil {
 			log.Printf("warning: init matrix display: %v", err)
@@ -112,6 +120,17 @@ func main() {
 		infof("matrix display disabled")
 	}
 
+	if display == nil && strings.TrimSpace(*displayTestFlag) != "" {
+		log.Printf("warning: display test requested but matrix initialization failed")
+	}
+
+	if display != nil && strings.TrimSpace(*displayTestFlag) != "" {
+		if err := showTestImage(ctx, display, strings.TrimSpace(*displayTestFlag)); err != nil {
+			log.Fatalf("display test failed: %v", err)
+		}
+		return
+	}
+
 	fmt.Println("Listening for updates. Press Ctrl+C to exit.")
 	opts := sonos.ListenerOptions{
 		Debug:       debugMode,
@@ -121,4 +140,47 @@ func main() {
 	if err := sonos.ListenForEvents(ctx, *targetDevice, targetRoom, defaultCallbackPath, opts); err != nil {
 		log.Printf("warning: %v", err)
 	}
+}
+
+func showTestImage(ctx context.Context, display *matrixdisplay.Controller, path string) error {
+	img, err := loadAndScaleImage(path)
+	if err != nil {
+		return err
+	}
+
+	if err := display.Show(img); err != nil {
+		return fmt.Errorf("matrixdisplay: show test image: %w", err)
+	}
+
+	fmt.Printf("Displayed %q on the matrix. Press Ctrl+C to exit.\n", path)
+	select {
+	case <-ctx.Done():
+		return nil
+	}
+}
+
+func loadAndScaleImage(path string) (image.Image, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, fmt.Errorf("matrixdisplay: image path is empty")
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("matrixdisplay: open image %q: %w", path, err)
+	}
+	defer file.Close()
+
+	src, _, err := image.Decode(file)
+	if err != nil {
+		return nil, fmt.Errorf("matrixdisplay: decode image %q: %w", path, err)
+	}
+
+	srcBounds := src.Bounds()
+	if srcBounds.Dx() == matrixdisplay.PanelWidth && srcBounds.Dy() == matrixdisplay.PanelHeight {
+		return src, nil
+	}
+
+	dst := image.NewRGBA(image.Rect(0, 0, matrixdisplay.PanelWidth, matrixdisplay.PanelHeight))
+	draw.CatmullRom.Scale(dst, dst.Bounds(), src, srcBounds, draw.Src, nil)
+	return dst, nil
 }
