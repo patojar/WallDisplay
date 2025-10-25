@@ -33,6 +33,8 @@ func NewController() (*Controller, error) {
 	config.ChainLength = 1
 	config.Parallel = 1
 	config.Brightness = defaultBrightness
+	// Force the GPIO mapping expected by the Adafruit RGB Matrix Bonnet.
+	config.HardwareMapping = "adafruit-hat-pwm"
 
 	matrix, err := rgbmatrix.NewRGBLedMatrix(&config)
 	if err != nil {
