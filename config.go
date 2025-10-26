@@ -12,7 +12,8 @@ import (
 
 // Config contains optional configuration overrides loaded from disk.
 type Config struct {
-	Room string `json:"room"`
+	Room       string `json:"room"`
+	Brightness *int   `json:"brightness,omitempty"`
 }
 
 func loadConfig(path string) (Config, error) {
@@ -41,6 +42,12 @@ func loadConfig(path string) (Config, error) {
 
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, fmt.Errorf("load config: parse %q: %w", path, err)
+	}
+
+	if cfg.Brightness != nil {
+		if *cfg.Brightness < 1 || *cfg.Brightness > 100 {
+			return cfg, fmt.Errorf("load config: brightness must be between 1 and 100, got %d", *cfg.Brightness)
+		}
 	}
 	return cfg, nil
 }

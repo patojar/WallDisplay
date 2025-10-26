@@ -22,13 +22,17 @@ type Controller struct {
 
 // NewController initializes the LED matrix and clears the display. Call Close
 // when finished to release resources.
-func NewController() (*Controller, error) {
+func NewController(brightness int) (*Controller, error) {
+	if brightness <= 0 || brightness > 100 {
+		brightness = defaultBrightness
+	}
+
 	config := rgbmatrix.DefaultConfig
 	config.Rows = PanelHeight
 	config.Cols = PanelWidth
 	config.ChainLength = 1
 	config.Parallel = 1
-	config.Brightness = defaultBrightness
+	config.Brightness = brightness
 	// Force the GPIO mapping expected by the Adafruit RGB Matrix Bonnet.
 	config.HardwareMapping = "adafruit-hat-pwm"
 

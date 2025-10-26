@@ -74,11 +74,12 @@ You can pin to one Sonos room by editing `config.json`:
 
 ```json
 {
-  "room": "Living Room"
+  "room": "Living Room",
+  "brightness": 75
 }
 ```
 
-Leave the file empty or delete it to display the status of every reachable room.
+`brightness` is optional (1–100). Leave the file empty or delete it to display the status of every reachable room and fall back to the default display brightness (60).
 
 ---
 
@@ -112,6 +113,8 @@ When the program starts it:
 1. Discovers Sonos zones on your LAN.
 2. (If `config.json` specifies a room) subscribes to real-time events for that zone.
 3. Displays the current track on stdout, and mirrors artwork/text on the matrix when `-display` is set.
+
+If playback transitions out of the *Playing* state, the display remains on for two minutes (configurable via `IdleTimeout` in code) and then clears automatically even if no further Sonos events arrive.
 
 Press `Ctrl+C` to exit cleanly.
 

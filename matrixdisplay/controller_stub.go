@@ -11,7 +11,7 @@ import (
 type Controller struct{}
 
 // NewController always returns an error on unsupported platforms.
-func NewController() (*Controller, error) {
+func NewController(int) (*Controller, error) {
 	return nil, errors.New("matrixdisplay: RGB LED matrix output is only supported on linux")
 }
 

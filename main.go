@@ -59,6 +59,12 @@ func main() {
 		infof("filtering to room %q", targetRoom)
 	}
 
+	var brightness int
+	if cfg.Brightness != nil {
+		brightness = *cfg.Brightness
+		infof("matrix brightness override set to %d", brightness)
+	}
+
 	discoveryCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	devices, err := sonos.Discover(discoveryCtx, discoveryTimeout, targetRoom)
 	cancel()
@@ -104,7 +110,7 @@ func main() {
 	var display *matrixdisplay.Controller
 	needDisplay := *displayFlag || strings.TrimSpace(*displayTestFlag) != ""
 	if needDisplay {
-		ctrl, err := matrixdisplay.NewController()
+		ctrl, err := matrixdisplay.NewController(brightness)
 		if err != nil {
 			log.Printf("warning: init matrix display: %v", err)
 		} else {
@@ -135,7 +141,7 @@ func main() {
 	opts := sonos.ListenerOptions{
 		Debug:       debugMode,
 		Display:     display,
-		IdleTimeout: 5 * time.Minute,
+		IdleTimeout: 2 * time.Minute,
 	}
 	if err := sonos.ListenForEvents(ctx, *targetDevice, targetRoom, defaultCallbackPath, opts); err != nil {
 		log.Printf("warning: %v", err)

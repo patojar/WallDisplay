@@ -48,8 +48,40 @@ func ListenForEvents(ctx context.Context, device Device, room, callbackPath stri
 	lastTrackSignature := ""
 	savedArtSignature := ""
 	displayActive := false
-	var pauseSince time.Time
 	cacheToDisk := opts.Display == nil
+	var idleTimer *time.Timer
+	var idleTimerCh <-chan time.Time
+
+	stopIdleTimer := func() {
+		if idleTimer != nil {
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
+				}
+			}
+			idleTimer = nil
+			idleTimerCh = nil
+		}
+	}
+
+	startIdleTimer := func() {
+		if opts.Display == nil || opts.IdleTimeout <= 0 {
+			return
+		}
+		if idleTimer == nil {
+			idleTimer = time.NewTimer(opts.IdleTimeout)
+			idleTimerCh = idleTimer.C
+			return
+		}
+		if !idleTimer.Stop() {
+			select {
+			case <-idleTimer.C:
+			default:
+			}
+		}
+		idleTimer.Reset(opts.IdleTimeout)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
@@ -153,38 +185,16 @@ func ListenForEvents(ctx context.Context, device Device, room, callbackPath stri
 			needPrint := state != lastState || signature != lastTrackSignature
 			needArt := signature != "" && signature != savedArtSignature
 			idleState := display == "(idle)" || strings.EqualFold(state, "No Media") || strings.EqualFold(state, "Stopped")
+			isPlaying := strings.EqualFold(state, "Playing")
+
+			if isPlaying {
+				stopIdleTimer()
+			} else {
+				startIdleTimer()
+			}
 
 			if opts.Debug {
-				logDebug("debug: event room=%s state=%s display=%s sig=%s needPrint=%t needArt=%t idle=%t", room, state, display, signature, needPrint, needArt, idleState)
-			}
-
-			if idleState {
-				pauseSince = time.Time{}
-				savedArtSignature = ""
-				if opts.Display != nil && displayActive {
-					if err := opts.Display.Clear(); err != nil {
-						log.Printf("warning: clear display: %v", err)
-					}
-					displayActive = false
-				}
-			}
-
-			if strings.EqualFold(state, "Paused") {
-				if pauseSince.IsZero() {
-					pauseSince = time.Now()
-				}
-			} else {
-				pauseSince = time.Time{}
-			}
-
-			if opts.Display != nil && !pauseSince.IsZero() && time.Since(pauseSince) >= opts.IdleTimeout {
-				if displayActive {
-					if err := opts.Display.Clear(); err != nil {
-						log.Printf("warning: clear display after pause: %v", err)
-					}
-					displayActive = false
-				}
-				savedArtSignature = ""
+				logDebug("debug: event room=%s state=%s display=%s sig=%s needPrint=%t needArt=%t idle=%t timerActive=%t", room, state, display, signature, needPrint, needArt, idleState, idleTimer != nil)
 			}
 
 			if !needPrint && !needArt {
@@ -209,6 +219,18 @@ func ListenForEvents(ctx context.Context, device Device, room, callbackPath stri
 						}
 					}
 				}
+			}
+		case <-idleTimerCh:
+			stopIdleTimer()
+			if opts.Display != nil && displayActive {
+				if err := opts.Display.Clear(); err != nil {
+					log.Printf("warning: clear display after idle timeout: %v", err)
+				}
+				displayActive = false
+			}
+			savedArtSignature = ""
+			if opts.Debug {
+				logDebug("debug: idle timeout reached; display cleared for room %s", room)
 			}
 		case <-renew:
 			renewCtx, renewCancel := context.WithTimeout(context.Background(), 5*time.Second)
