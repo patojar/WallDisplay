@@ -140,7 +140,7 @@ The matrix driver only compiles on Linux (`//go:build linux`). On macOS or Windo
 
 ## 8. Run on startup (systemd)
 
-The repository ships with a unit file (`walldisplay.service`) that runs the program as `root` so it can drive the RGB matrix without extra capability setup. Adjust the hard-coded paths if your checkout lives somewhere other than `/home/pi/WallDisplay`.
+The repository ships with a unit file (`walldisplay.service`) that runs the program as `root` so it can drive the RGB matrix without extra capability setup. Adjust the hard-coded paths if your checkout lives somewhere other than `/home/pato/WallDisplay`.
 
 1. Build the binary on the Pi (run from the repo root):
    ```sh
@@ -148,7 +148,7 @@ The repository ships with a unit file (`walldisplay.service`) that runs the prog
    ```
 2. Install the unit and refresh systemd:
    ```sh
-   sudo cp walldisplay.service /etc/systemd/system/
+   sudo cp service/walldisplay.service /etc/systemd/system/
    sudo systemctl daemon-reload
    ```
 3. (Optional) Override runtime flags by creating `/etc/default/wall-display`:
@@ -165,7 +165,7 @@ The repository ships with a unit file (`walldisplay.service`) that runs the prog
    sudo journalctl -u walldisplay.service -f
    ```
 
-Whenever you rebuild the binary, replace `/home/pi/WallDisplay/bin/musicDisplay` with the new build (or re-run `make build`) and restart the service:
+Whenever you rebuild the binary, replace `/home/pato/WallDisplay/bin/musicDisplay` with the new build (or re-run `make build`) and restart the service:
 
 ```sh
 sudo systemctl restart walldisplay.service
