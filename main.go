@@ -65,6 +65,12 @@ func main() {
 		infof("matrix brightness override set to %d", brightness)
 	}
 
+	idleTimeout := 2 * time.Minute
+	if cfg.IdleTimeoutSeconds != nil {
+		idleTimeout = time.Duration(*cfg.IdleTimeoutSeconds) * time.Second
+		infof("idle timeout override set to %s", idleTimeout)
+	}
+
 	discoveryCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	devices, err := sonos.Discover(discoveryCtx, discoveryTimeout, targetRoom)
 	cancel()
@@ -141,7 +147,7 @@ func main() {
 	opts := sonos.ListenerOptions{
 		Debug:       debugMode,
 		Display:     display,
-		IdleTimeout: 2 * time.Minute,
+		IdleTimeout: idleTimeout,
 	}
 	if err := sonos.ListenForEvents(ctx, *targetDevice, targetRoom, defaultCallbackPath, opts); err != nil {
 		log.Printf("warning: %v", err)

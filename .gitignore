@@ -2,3 +2,4 @@
 /art/
 .DS_Store
 .gocache/
+.config.json

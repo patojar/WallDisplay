@@ -12,8 +12,9 @@ import (
 
 // Config contains optional configuration overrides loaded from disk.
 type Config struct {
-	Room       string `json:"room"`
-	Brightness *int   `json:"brightness,omitempty"`
+	Room               string `json:"room"`
+	Brightness         *int   `json:"brightness,omitempty"`
+	IdleTimeoutSeconds *int   `json:"idle_timeout_seconds,omitempty"`
 }
 
 func loadConfig(path string) (Config, error) {
@@ -47,6 +48,11 @@ func loadConfig(path string) (Config, error) {
 	if cfg.Brightness != nil {
 		if *cfg.Brightness < 1 || *cfg.Brightness > 100 {
 			return cfg, fmt.Errorf("load config: brightness must be between 1 and 100, got %d", *cfg.Brightness)
+		}
+	}
+	if cfg.IdleTimeoutSeconds != nil {
+		if *cfg.IdleTimeoutSeconds <= 0 {
+			return cfg, fmt.Errorf("load config: idle_timeout_seconds must be positive, got %d", *cfg.IdleTimeoutSeconds)
 		}
 	}
 	return cfg, nil
