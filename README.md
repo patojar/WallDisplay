@@ -42,6 +42,18 @@ Make sure the Pi, the matrix power supply, and your Sonos devices are on the sam
    sudo /home/pi/rpi-rgb-led-matrix/examples-api-use/demo --led-rows=64 --led-cols=64 --led-gpio-mapping=adafruit-hat-pwm
    ```
    You should see animations on the panel.
+6. (If the installer didn’t install the library system-wide) build and install hzeller’s C driver manually:
+   ```sh
+   sudo apt install -y python3-setuptools build-essential
+   cd ~/rpi-rgb-led-matrix
+   make
+   sudo cp lib/librgbmatrix.a /usr/local/lib/
+   sudo cp lib/librgbmatrix.so.1 /usr/local/lib/
+   sudo ln -sf librgbmatrix.so.1 /usr/local/lib/librgbmatrix.so
+   sudo cp include/*.h /usr/local/include/
+   sudo ldconfig
+   ```
+   Without these files in `/usr/local/{include,lib}`, the Go build will fail with `led-matrix-c.h` or `-lrgbmatrix` errors.
 
 ---
 
@@ -83,9 +95,11 @@ sudo go run . -display
 Or build first with the Makefile, then execute:
 
 ```sh
-CGO_ENABLED=1 GOARCH=arm GOARM=6 make build
+make build GOARCH=arm GOARM=6 CGO_ENABLED=1
 sudo ./bin/musicDisplay -display
 ```
+
+If you see linker errors about `-m64` or `-marm`, double-check the `GOARCH`/`GOARM` values (on a Pi Zero W they should be `arm` and `6`) and make sure you are building on the same architecture that will run the binary. When CGO is enabled, Go will automatically pass the correct flags to the local GCC toolchain if these values match the host.
 
 Flags:
 
@@ -109,6 +123,8 @@ Press `Ctrl+C` to exit cleanly.
 - Flicker or super-dim output usually means the mapping is wrong or the matrix PSU is undersized—64×64 panels need a dedicated 5 V supply that can source 4 A or more.
 - Network discovery relies on SSDP; make sure mDNS/SSDP traffic is not blocked between the Pi and your Sonos devices.
 - Running without `sudo` triggers “GPIO permission denied” errors. Either use `sudo` or set the necessary capabilities on the binary (`sudo setcap 'cap_sys_nice,cap_sys_rawio=+ep' ./bin/walldisplay`).
+- `ModuleNotFoundError: No module named 'distutils'` when building the hzeller driver just means Python’s packaging helpers are missing—`sudo apt install python3-setuptools` puts `distutils` back in place.
+- Linker complaints about `-lrgbmatrix` or missing headers (`led-matrix-c.h`) indicate the driver wasn’t copied into `/usr/local/{lib,include}`. Re-run the manual install steps in section 2.
 
 ---
 
