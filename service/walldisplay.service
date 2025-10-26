@@ -6,10 +6,10 @@ After=network-online.target sound.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/pi/WallDisplay
+WorkingDirectory=/home/pato/WallDisplay
 Environment=WALLDISPLAY_FLAGS=-display
 EnvironmentFile=-/etc/default/wall-display
-ExecStart=/home/pi/WallDisplay/bin/musicDisplay $WALLDISPLAY_FLAGS
+ExecStart=/home/pato/WallDisplay/bin/musicDisplay $WALLDISPLAY_FLAGS
 Restart=on-failure
 RestartSec=10s
 StandardOutput=journal
