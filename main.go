@@ -102,7 +102,9 @@ func main() {
 		return
 	}
 
-	sonos.PrintRoomStatuses(statuses)
+	if debugMode {
+		sonos.PrintRoomStatuses(statuses)
+	}
 
 	if targetRoom == "" {
 		return

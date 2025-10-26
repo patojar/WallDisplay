@@ -182,7 +182,8 @@ func ListenForEvents(ctx context.Context, device Device, room, callbackPath stri
 				continue
 			}
 			signature := trackSignature(ev.Track, display)
-			needPrint := state != lastState || signature != lastTrackSignature
+			stateChanged := state != lastState || signature != lastTrackSignature
+			shouldPrint := opts.Debug && stateChanged
 			needArt := signature != "" && signature != savedArtSignature
 			idleState := display == "(idle)" || strings.EqualFold(state, "No Media") || strings.EqualFold(state, "Stopped")
 			isPlaying := strings.EqualFold(state, "Playing")
@@ -194,15 +195,17 @@ func ListenForEvents(ctx context.Context, device Device, room, callbackPath stri
 			}
 
 			if opts.Debug {
-				logDebug("debug: event room=%s state=%s display=%s sig=%s needPrint=%t needArt=%t idle=%t timerActive=%t", room, state, display, signature, needPrint, needArt, idleState, idleTimer != nil)
+				logDebug("debug: event room=%s state=%s display=%s sig=%s stateChanged=%t shouldPrint=%t needArt=%t idle=%t timerActive=%t", room, state, display, signature, stateChanged, shouldPrint, needArt, idleState, idleTimer != nil)
 			}
 
-			if !needPrint && !needArt {
+			if !stateChanged && !needArt {
 				continue
 			}
-			if needPrint {
+			if stateChanged {
 				lastState = state
 				lastTrackSignature = signature
+			}
+			if shouldPrint {
 				fmt.Printf("[%s] %s – %s | %s\n", time.Now().Format("15:04:05"), room, state, display)
 			}
 			if needArt {
