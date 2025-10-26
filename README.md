@@ -137,4 +137,39 @@ The matrix driver only compiles on Linux (`//go:build linux`). On macOS or Windo
 
 ---
 
+## 8. Run on startup (systemd)
+
+The repository ships with a unit file (`walldisplay.service`) that runs the program as `root` so it can drive the RGB matrix without extra capability setup. Adjust the hard-coded paths if your checkout lives somewhere other than `/home/pi/WallDisplay`.
+
+1. Build the binary on the Pi (run from the repo root):
+   ```sh
+   make build GOARCH=arm GOARM=6 CGO_ENABLED=1
+   ```
+2. Install the unit and refresh systemd:
+   ```sh
+   sudo cp walldisplay.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   ```
+3. (Optional) Override runtime flags by creating `/etc/default/wall-display`:
+   ```sh
+   echo 'WALLDISPLAY_FLAGS="-display"' | sudo tee /etc/default/wall-display
+   ```
+   Add other flags (for example `-debug` or `-display-test /path/to/image.png`) to the same variable as needed.
+4. Enable the service so it starts now and at boot:
+   ```sh
+   sudo systemctl enable --now walldisplay.service
+   ```
+5. Check logs with:
+   ```sh
+   sudo journalctl -u walldisplay.service -f
+   ```
+
+Whenever you rebuild the binary, replace `/home/pi/WallDisplay/bin/musicDisplay` with the new build (or re-run `make build`) and restart the service:
+
+```sh
+sudo systemctl restart walldisplay.service
+```
+
+---
+
 Happy hacking!
