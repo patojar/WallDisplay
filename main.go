@@ -7,7 +7,6 @@ import (
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
-	_ "image/png"
 	"log"
 	"os"
 	"os/signal"
@@ -41,10 +40,25 @@ func main() {
 	debugFlag := flag.Bool("debug", false, "enable debug logging")
 	displayFlag := flag.Bool("display", false, "enable RGB LED matrix output")
 	displayTestFlag := flag.String("display-test", "", "path to an image to display on the matrix and exit")
+	writeOverlayFlag := flag.Bool("write-overlay", false, "overlay text on an image and write it back to disk; provide text and image path arguments")
 	flag.Parse()
 
 	debugMode = *debugFlag
 	sonos.SetDebugLogging(debugMode)
+
+	if *writeOverlayFlag {
+		if flag.NArg() < 2 {
+			log.Fatalf("-write-overlay requires text and an image path argument")
+		}
+		text := flag.Arg(0)
+		imagePath := flag.Arg(1)
+		outputPath, err := generateOverlayImage(text, imagePath)
+		if err != nil {
+			log.Fatalf("write overlay: %v", err)
+		}
+		fmt.Printf("Overlay image written to %s\n", outputPath)
+		return
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
